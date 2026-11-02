@@ -22,6 +22,7 @@ details. */
 #include "memory_layout.h"
 #include "spinlock.h"
 #include "tls_pbuf.h"
+#include <securityappcontainer.h>
 #include <alloca.h>
 #include <wchar.h>
 
@@ -51,7 +52,7 @@ get_appcontainer_parent_dir ()
       PWCHAR path = tp.w_get ();
       if (__in_forkee == FORKING)
 	{
-	  WCHAR sidbuf[128];
+	  WCHAR sidbuf[UNLEN + 1];
 	  UNICODE_STRING sid;
 	  RtlInitEmptyUnicodeString (&sid, sidbuf, sizeof sidbuf);
 	  NTSTATUS status
@@ -390,6 +391,7 @@ user_info::create (bool reinit)
 void
 shared_destroy ()
 {
+  wsock_destroy ();
   ForceCloseHandle (cygwin_shared_h);
   UnmapViewOfFile (cygwin_shared);
   ForceCloseHandle (cygwin_user_h);
@@ -467,6 +469,7 @@ memory_init ()
   shared_info::create ();	/* Initialize global shared memory */
   cygheap->user_heap.init ();	/* Initialize user heap */
   user_info::create (false);	/* Initialize per-user shared memory */
+  wsock_init ();
   /* Initialize tty list session stuff.  Doesn't really belong here but
      this needs to be initialized before any tty or console manipulation
      happens and it is a common location.  */

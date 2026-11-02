@@ -359,7 +359,7 @@ CreateFileMappingW (HANDLE hFile, LPSECURITY_ATTRIBUTES lpAttributes,
   PSECURITY_DESCRIPTOR psd
     = lpAttributes ? lpAttributes->lpSecurityDescriptor : NULL;
   if (lpName && appcontainer_sid () && !has_non_null_dacl (psd))
-    psd = appcontainer_sd (access);
+    psd = appcontainer_sd (SECTION_ALL_ACCESS);
   InitializeObjectAttributes (&attr, lpName ? &uname : NULL, flags,
 			      lpName ? get_shared_parent_dir () : NULL,
 			      psd);
