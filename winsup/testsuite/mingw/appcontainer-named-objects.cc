@@ -348,6 +348,30 @@ run_open (const std::wstring& root_path)
   return status < 0 ? 2 : 0;
 }
 
+static bool
+wait_for_child (HANDLE process, DWORD timeout)
+{
+  DWORD wait = WaitForSingleObject (process, timeout);
+  if (wait != WAIT_OBJECT_0)
+    {
+      fwprintf (stderr, L"ERROR=child-wait:%lu\n",
+		wait == WAIT_FAILED ? GetLastError () : wait);
+      if (!TerminateProcess (process, 1)
+	  || WaitForSingleObject (process, INFINITE) != WAIT_OBJECT_0)
+	fwprintf (stderr, L"ERROR=child-terminate:%lu\n", GetLastError ());
+      return false;
+    }
+
+  DWORD exit_code;
+  if (!GetExitCodeProcess (process, &exit_code))
+    {
+      fwprintf (stderr, L"ERROR=child-exit:%lu\n", GetLastError ());
+      return false;
+    }
+  wprintf (L"CHILD_EXIT=%lu\n", exit_code);
+  return exit_code == 0;
+}
+
 static int
 run_parent (const std::wstring& ready_file, DWORD hold_seconds)
 {
@@ -463,11 +487,7 @@ run_parent (const std::wstring& ready_file, DWORD hold_seconds)
 	result = 18;
       else
 	{
-	  WaitForSingleObject (pi.hProcess, 30000);
-	  DWORD exit_code;
-	  GetExitCodeProcess (pi.hProcess, &exit_code);
-	  wprintf (L"CHILD_EXIT=%lu\n", exit_code);
-	  if (exit_code)
+	  if (!wait_for_child (pi.hProcess, 30000))
 	    result = 19;
 	  CloseHandle (pi.hThread);
 	  CloseHandle (pi.hProcess);
