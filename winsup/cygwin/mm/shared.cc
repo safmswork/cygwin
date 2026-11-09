@@ -21,6 +21,8 @@ details. */
 #include "cygwin_version.h"
 #include "memory_layout.h"
 #include "spinlock.h"
+#include "tls_pbuf.h"
+#include <securityappcontainer.h>
 #include <alloca.h>
 #include <wchar.h>
 
@@ -33,6 +35,123 @@ HANDLE NO_COPY cygwin_user_h;
    NT namespace used to implement global objects including shared memory. */
 
 static HANDLE NO_COPY shared_parent_dir;
+static HANDLE NO_COPY appcontainer_parent_dir;
+
+static bool
+is_appcontainer_process ()
+{
+  return appcontainer_sid () != NULL;
+}
+
+static HANDLE
+get_appcontainer_parent_dir ()
+{
+  if (!appcontainer_parent_dir)
+    {
+      tmp_pathbuf tp;
+      PWCHAR path = tp.w_get ();
+      if (__in_forkee == FORKING)
+	{
+	  WCHAR sidbuf[UNLEN + 1];
+	  UNICODE_STRING sid;
+	  RtlInitEmptyUnicodeString (&sid, sidbuf, sizeof sidbuf);
+	  NTSTATUS status
+	    = RtlConvertSidToUnicodeString (&sid, appcontainer_sid (), FALSE);
+	  if (!NT_SUCCESS (status))
+	    api_fatal ("RtlConvertSidToUnicodeString(AppContainer): %y",
+		       status);
+
+	  PROCESS_SESSION_INFORMATION psi;
+	  status = NtQueryInformationProcess (NtCurrentProcess (),
+					      ProcessSessionInformation,
+					      &psi, sizeof psi, NULL);
+	  if (!NT_SUCCESS (status))
+	    api_fatal ("NtQueryInformationProcess"
+		       "(ProcessSessionInformation): %y", status);
+
+	  __small_swprintf (path,
+			    L"\\Sessions\\%u\\AppContainerNamedObjects\\%S",
+			    psi.SessionId, &sid);
+	}
+      else
+	{
+	  ULONG required = 0;
+	  GetAppContainerNamedObjectPath (hProcToken, NULL, 0, NULL,
+					  &required);
+	  if (!required || required > NT_MAX_PATH)
+	    api_fatal ("GetAppContainerNamedObjectPath(size %u), %E",
+		       required);
+
+	  ULONG returned = 0;
+	  if (!GetAppContainerNamedObjectPath (hProcToken, NULL, required,
+					       path, &returned))
+	    api_fatal ("GetAppContainerNamedObjectPath, %E");
+	  if (!returned || returned > required
+	      || wcsnlen (path, required) >= required)
+	    api_fatal ("GetAppContainerNamedObjectPath returned invalid length "
+		       "%u (buffer length %u)", returned, required);
+
+	  if (path[0] != L'\\')
+	    {
+	      PROCESS_SESSION_INFORMATION psi;
+	      NTSTATUS status
+		= NtQueryInformationProcess (NtCurrentProcess (),
+					     ProcessSessionInformation,
+					     &psi, sizeof psi, NULL);
+	      if (!NT_SUCCESS (status))
+		api_fatal ("NtQueryInformationProcess"
+			   "(ProcessSessionInformation): %y", status);
+
+	      size_t path_len = wcslen (path);
+	      if (path_len + 32 >= NT_MAX_PATH)
+		api_fatal ("AppContainer named object path is too long");
+	      PWCHAR absolute_path = tp.w_get ();
+	      __small_swprintf (absolute_path, L"\\Sessions\\%u\\%W",
+				psi.SessionId, path);
+	      path = absolute_path;
+	    }
+	}
+
+      UNICODE_STRING uname;
+      OBJECT_ATTRIBUTES attr;
+      RtlInitUnicodeString (&uname, path);
+      InitializeObjectAttributes (&attr, &uname, OBJ_CASE_INSENSITIVE, NULL,
+				  NULL);
+      NTSTATUS status
+	= NtOpenDirectoryObject (&appcontainer_parent_dir,
+				 CYG_SHARED_DIR_ACCESS, &attr);
+      if (!NT_SUCCESS (status))
+	api_fatal ("NtOpenDirectoryObject(%S): %y", &uname, status);
+    }
+  return appcontainer_parent_dir;
+}
+
+static HANDLE
+create_appcontainer_dir (HANDLE root, PCWSTR name)
+{
+  HANDLE dir;
+  UNICODE_STRING uname;
+  OBJECT_ATTRIBUTES attr;
+  RtlInitUnicodeString (&uname, name);
+  NTSTATUS status;
+  if (__in_forkee == FORKING)
+    {
+      InitializeObjectAttributes (&attr, &uname, OBJ_CASE_INSENSITIVE, root,
+				  NULL);
+      status = NtOpenDirectoryObject (&dir, CYG_SHARED_DIR_ACCESS, &attr);
+    }
+  else
+    {
+      InitializeObjectAttributes (&attr, &uname, OBJ_OPENIF, root,
+				  appcontainer_sd (CYG_SHARED_DIR_ACCESS));
+      status = NtCreateDirectoryObject (&dir, CYG_SHARED_DIR_ACCESS, &attr);
+    }
+  if (!NT_SUCCESS (status))
+    api_fatal ("%sDirectoryObject(%S): %y",
+	       __in_forkee == FORKING ? "NtOpen" : "NtCreate",
+	       &uname, status);
+  return dir;
+}
 
 HANDLE
 get_shared_parent_dir ()
@@ -43,6 +162,18 @@ get_shared_parent_dir ()
 
   if (!shared_parent_dir)
     {
+      if (is_appcontainer_process ())
+	{
+	  WCHAR bnoname[MAX_PATH];
+	  __small_swprintf (bnoname, L"%s%s-%S",
+			    cygwin_version.shared_id,
+			    _cygwin_testing ? cygwin_version.dll_build_date : "",
+			    &cygheap->installation_key);
+	  shared_parent_dir
+	    = create_appcontainer_dir (get_appcontainer_parent_dir (), bnoname);
+	  return shared_parent_dir;
+	}
+
       WCHAR bnoname[MAX_PATH];
       __small_swprintf (bnoname, L"\\BaseNamedObjects\\%s%s-%S",
 			cygwin_version.shared_id,
@@ -70,6 +201,18 @@ get_session_parent_dir ()
 
   if (!session_parent_dir)
     {
+      if (is_appcontainer_process ())
+	{
+	  WCHAR bnoname[MAX_PATH];
+	  __small_swprintf (bnoname, L"Session-%s%s-%S",
+			    cygwin_version.shared_id,
+			    _cygwin_testing ? cygwin_version.dll_build_date : "",
+			    &cygheap->installation_key);
+	  session_parent_dir
+	    = create_appcontainer_dir (get_appcontainer_parent_dir (), bnoname);
+	  return session_parent_dir;
+	}
+
       PROCESS_SESSION_INFORMATION psi;
       status = NtQueryInformationProcess (NtCurrentProcess (),
 					  ProcessSessionInformation,
@@ -248,6 +391,7 @@ user_info::create (bool reinit)
 void
 shared_destroy ()
 {
+  wsock_destroy ();
   ForceCloseHandle (cygwin_shared_h);
   UnmapViewOfFile (cygwin_shared);
   ForceCloseHandle (cygwin_user_h);
@@ -325,6 +469,7 @@ memory_init ()
   shared_info::create ();	/* Initialize global shared memory */
   cygheap->user_heap.init ();	/* Initialize user heap */
   user_info::create (false);	/* Initialize per-user shared memory */
+  wsock_init ();
   /* Initialize tty list session stuff.  Doesn't really belong here but
      this needs to be initialized before any tty or console manipulation
      happens and it is a common location.  */

@@ -79,6 +79,8 @@ enum shared_locations
 
 void memory_init ();
 void shared_destroy ();
+void wsock_init ();
+void wsock_destroy ();
 
 #define shared_align_past(p) \
   ((char *) (system_info.dwAllocationGranularity * \

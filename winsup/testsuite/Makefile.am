@@ -49,6 +49,7 @@ check_PROGRAMS = \
 	winsup.api/shmtest \
 	winsup.api/sigchld \
 	winsup.api/signal-into-win32-api \
+	winsup.api/socket-event-sharing \
 	winsup.api/systemcall \
 	winsup.api/user_malloc \
 	winsup.api/waitpid \
@@ -387,14 +388,22 @@ clean-local:
 if MINGW_PROGS
 SUBDIRS = mingw
 check_PROGRAMS += testinst/bin/pty-background-native
+check_PROGRAMS += testinst/bin/appcontainer-child
+TESTS += mingw/appcontainer-launcher
 testinst_bin_pty_background_native_SOURCES = \
 	winsup.api/pty-background-native.c
+testinst_bin_appcontainer_child_SOURCES = \
+	winsup.api/appcontainer-child.c
+testinst_bin_appcontainer_child_LDADD = -ladvapi32 $(LDADD)
 
 testinst_bin_pty_background_native_DEPENDENCIES = \
 	$(filter-out -%,$(LDADD)) \
 	testinst/bin/pty-native-input$(EXEEXT) \
 	testinst/bin/cygwin-console-helper$(EXEEXT) \
 	testinst/usr/share/terminfo/78/xterm
+
+testinst_bin_appcontainer_child_DEPENDENCIES = \
+	$(filter-out -%,$(LDADD))
 
 testinst/usr/share/terminfo/78/xterm: /usr/share/terminfo/78/xterm
 	$(MKDIR_P) $(dir $@)
@@ -409,6 +418,9 @@ testinst/bin/cygwin-console-helper$(EXEEXT): \
 
 mingw/pty-native-input$(EXEEXT): $(srcdir)/mingw/pty-native-input.c
 	$(MAKE) -C mingw pty-native-input$(EXEEXT)
+
+mingw/appcontainer-launcher$(EXEEXT): $(srcdir)/mingw/appcontainer-launcher.cc
+	$(MAKE) -C mingw appcontainer-launcher$(EXEEXT)
 
 ../utils/mingw/cygwin-console-helper$(EXEEXT): \
 	$(top_srcdir)/utils/mingw/cygwin-console-helper.cc

@@ -956,6 +956,7 @@ static NO_COPY spenv spenvs[] =
 #ifdef DEBUGGING
   {NL ("CYGWIN_DEBUG="), false, true, NULL},
 #endif
+  {NL ("CYGWIN_TESTING="), false, true, NULL},
   {NL ("HOMEDRIVE="), false, false, &cygheap_user::env_homedrive},
   {NL ("HOMEPATH="), false, false, &cygheap_user::env_homepath},
   {NL ("LOGONSERVER="), false, false, &cygheap_user::env_logsrv},

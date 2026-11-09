@@ -48,7 +48,7 @@ bool check_token_membership (PSID);
 #define MAX_DACL_LEN(n) (sizeof (ACL) \
 		   + (n) * (sizeof (ACCESS_ALLOWED_ACE) - sizeof (DWORD) \
 			    + SECURITY_MAX_SID_SIZE))
-#define SD_MIN_SIZE (sizeof (SECURITY_DESCRIPTOR) + MAX_DACL_LEN (1))
+#define SD_MIN_SIZE (sizeof (SECURITY_DESCRIPTOR) + MAX_DACL_LEN (2))
 #define ACL_MAXIMUM_SIZE 65532	/* Yeah, right.  64K - sizeof (DWORD). */
 #define SD_MAXIMUM_SIZE 65536
 #define NO_SID ((PSID)NULL)
@@ -521,6 +521,12 @@ extern PSECURITY_DESCRIPTOR _recycler_sd (void *buf, bool users, bool dir);
 
 extern PSECURITY_DESCRIPTOR _everyone_sd (void *buf, ACCESS_MASK access);
 #define everyone_sd(access)	(_everyone_sd (alloca (SD_MIN_SIZE), (access)))
+
+extern PSID appcontainer_sid ();
+extern PSECURITY_DESCRIPTOR _appcontainer_sd (void *buf, ACCESS_MASK access);
+#define appcontainer_sd(access) \
+  (_appcontainer_sd (alloca (sizeof (SECURITY_DESCRIPTOR) \
+			     + MAX_DACL_LEN (3)), (access)))
 
 #define sec_none_cloexec(f) (((f) & O_CLOEXEC ? &sec_none_nih : &sec_none))
 

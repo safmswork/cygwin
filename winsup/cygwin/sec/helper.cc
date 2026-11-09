@@ -24,6 +24,7 @@ details. */
 #include "cygheap.h"
 #include "ntdll.h"
 #include "ldap.h"
+#include "tls_pbuf.h"
 
 /* General purpose security attribute objects for global use. */
 static NO_COPY_RO SECURITY_DESCRIPTOR null_sdp =
@@ -93,6 +94,99 @@ MKSID (mandatory_system_integrity_sid, "S-1-16-16384",
 #define SECURITY_SAMBA_UNIX_AUTHORITY {0,0,0,0,0,22}
 MKSID (well_known_samba_unix_user_fake_sid, "S-1-22-1-0",
        SECURITY_SAMBA_UNIX_AUTHORITY, 2, 1, 0);
+
+static bool NO_COPY appcontainer_sid_checked;
+static bool NO_COPY appcontainer_sid_valid;
+static ULONG NO_COPY
+  appcontainer_sid_buffer[(SECURITY_MAX_SID_SIZE + sizeof (ULONG) - 1)
+			  / sizeof (ULONG)];
+
+PSID
+appcontainer_sid ()
+{
+  if (!appcontainer_sid_checked)
+    {
+      ULONG is_appcontainer = 0;
+      ULONG size;
+      NTSTATUS status
+	= NtQueryInformationToken (hProcToken, TokenIsAppContainer,
+				   &is_appcontainer, sizeof is_appcontainer,
+				   &size);
+      if (!NT_SUCCESS (status))
+	api_fatal ("NtQueryInformationToken(TokenIsAppContainer): %y", status);
+      if (is_appcontainer)
+	{
+	  tmp_pathbuf tp;
+	  PTOKEN_APPCONTAINER_INFORMATION info
+	    = (PTOKEN_APPCONTAINER_INFORMATION) tp.w_get ();
+	  status = NtQueryInformationToken (hProcToken, TokenAppContainerSid,
+					    info, NT_MAX_PATH * sizeof (WCHAR),
+					    &size);
+	  if (!NT_SUCCESS (status))
+	    api_fatal ("NtQueryInformationToken(TokenAppContainerSid): %y",
+		       status);
+	  if (!info->TokenAppContainer)
+	    api_fatal ("Missing AppContainer SID");
+	  ULONG sid_len = RtlLengthSid (info->TokenAppContainer);
+	  if (sid_len > sizeof appcontainer_sid_buffer)
+	    api_fatal ("AppContainer SID is too long");
+	  status = RtlCopySid (sizeof appcontainer_sid_buffer,
+			       appcontainer_sid_buffer,
+			       info->TokenAppContainer);
+	  if (!NT_SUCCESS (status))
+	    api_fatal ("RtlCopySid(AppContainer): %y", status);
+	  appcontainer_sid_valid = true;
+	}
+      appcontainer_sid_checked = true;
+    }
+  return appcontainer_sid_valid ? (PSID) appcontainer_sid_buffer : NULL;
+}
+
+PSECURITY_DESCRIPTOR
+_appcontainer_sd (void *buf, ACCESS_MASK access)
+{
+  PSID app_sid = appcontainer_sid ();
+  if (!app_sid)
+    return NULL;
+
+  tmp_pathbuf tp;
+  PTOKEN_USER user = (PTOKEN_USER) tp.w_get ();
+  ULONG size;
+  NTSTATUS status
+    = NtQueryInformationToken (hProcToken, TokenUser, user,
+			       NT_MAX_PATH * sizeof (WCHAR), &size);
+  if (!NT_SUCCESS (status))
+    api_fatal ("NtQueryInformationToken(TokenUser): %y", status);
+
+  PISECURITY_DESCRIPTOR psd = (PISECURITY_DESCRIPTOR) buf;
+  status = RtlCreateSecurityDescriptor (psd, SECURITY_DESCRIPTOR_REVISION);
+  if (!NT_SUCCESS (status))
+    api_fatal ("RtlCreateSecurityDescriptor: %y", status);
+  PACL dacl = (PACL) (psd + 1);
+  status = RtlCreateAcl (dacl, MAX_DACL_LEN (3), ACL_REVISION);
+  if (!NT_SUCCESS (status))
+    api_fatal ("RtlCreateAcl: %y", status);
+  status = RtlAddAccessAllowedAce (dacl, ACL_REVISION, access,
+				   user->User.Sid);
+  if (!NT_SUCCESS (status))
+    api_fatal ("RtlAddAccessAllowedAce(user): %y", status);
+  status = RtlAddAccessAllowedAce (dacl, ACL_REVISION, access, app_sid);
+  if (!NT_SUCCESS (status))
+    api_fatal ("RtlAddAccessAllowedAce(AppContainer): %y", status);
+  status = RtlAddAccessAllowedAce (dacl, ACL_REVISION, GENERIC_ALL,
+				   well_known_system_sid);
+  if (!NT_SUCCESS (status))
+    api_fatal ("RtlAddAccessAllowedAce(system): %y", status);
+  LPVOID ace;
+  status = RtlFirstFreeAce (dacl, &ace);
+  if (!NT_SUCCESS (status))
+    api_fatal ("RtlFirstFreeAce: %y", status);
+  dacl->AclSize = (char *) ace - (char *) dacl;
+  status = RtlSetDaclSecurityDescriptor (psd, TRUE, dacl, FALSE);
+  if (!NT_SUCCESS (status))
+    api_fatal ("RtlSetDaclSecurityDescriptor: %y", status);
+  return psd;
+}
 
 void
 cygpsid::debug_print (const char *prefix) const
@@ -547,7 +641,7 @@ bool
 sec_acl (PACL acl, bool original, bool admins, PSID sid1, PSID sid2, DWORD access2)
 {
   NTSTATUS status;
-  size_t acl_len = MAX_DACL_LEN (5);
+  size_t acl_len = MAX_DACL_LEN (6);
   LPVOID pAce;
   cygpsid psid;
 
@@ -591,6 +685,14 @@ sec_acl (PACL acl, bool original, bool admins, PSID sid1, PSID sid2, DWORD acces
 				   well_known_system_sid);
   if (!NT_SUCCESS (status))
     debug_printf ("RtlAddAccessAllowedAce(system) %y", status);
+  PSID app_sid = appcontainer_sid ();
+  if (app_sid)
+    {
+      status = RtlAddAccessAllowedAce (acl, ACL_REVISION, GENERIC_ALL,
+				       app_sid);
+      if (!NT_SUCCESS (status))
+	debug_printf ("RtlAddAccessAllowedAce(AppContainer) %y", status);
+    }
   status = RtlFirstFreeAce (acl, &pAce);
   if (NT_SUCCESS (status) && pAce)
     acl->AclSize = (char *) pAce - (char *) acl;
@@ -693,13 +795,25 @@ _everyone_sd (void *buf, ACCESS_MASK access)
     {
       RtlCreateSecurityDescriptor (psd, SECURITY_DESCRIPTOR_REVISION);
       PACL dacl = (PACL) (psd + 1);
-      RtlCreateAcl (dacl, MAX_DACL_LEN (1), ACL_REVISION);
+      RtlCreateAcl (dacl, MAX_DACL_LEN (2), ACL_REVISION);
       status = RtlAddAccessAllowedAce (dacl, ACL_REVISION, access,
 				       well_known_world_sid);
       if (!NT_SUCCESS (status))
 	{
 	  debug_printf ("RtlAddAccessAllowedAce: %y", status);
 	  return NULL;
+	}
+      PSID app_sid = appcontainer_sid ();
+      if (app_sid)
+	{
+	  status = RtlAddAccessAllowedAce (dacl, ACL_REVISION, access,
+					   app_sid);
+	  if (!NT_SUCCESS (status))
+	    {
+	      debug_printf ("RtlAddAccessAllowedAce(AppContainer): %y",
+			    status);
+	      return NULL;
+	    }
 	}
       LPVOID ace;
       status = RtlFirstFreeAce (dacl, &ace);
