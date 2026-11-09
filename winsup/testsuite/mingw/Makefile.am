@@ -17,7 +17,7 @@ override CXX = @MINGW_CXX@
 AM_CPPFLAGS =
 
 noinst_PROGRAMS = cygrun cygload winchild pty-native-input \
-	appcontainer-named-objects
+	appcontainer-launcher
 
 cygrun_SOURCES = \
 	../cygrun.c
@@ -34,7 +34,7 @@ winchild_LDADD=-lntdll
 pty_native_input_SOURCES = \
 	pty-native-input.c
 
-appcontainer_named_objects_SOURCES = \
-	appcontainer-named-objects.cc
-appcontainer_named_objects_LDFLAGS = -static -municode
-appcontainer_named_objects_LDADD = -ladvapi32
+appcontainer_launcher_SOURCES = \
+	appcontainer-launcher.cc
+appcontainer_launcher_LDFLAGS = -static -municode
+appcontainer_launcher_LDADD = -ladvapi32 -luserenv
