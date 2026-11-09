@@ -817,8 +817,16 @@ fhandler_pipe::create (LPSECURITY_ATTRIBUTES sa_ptr, PHANDLE r, PHANDLE w,
     psize = DEFAULT_PIPEBUFSIZE;
 
   char pipename[MAX_PATH];
-  size_t len = __small_sprintf (pipename, PIPE_INTRO "%S-",
-				      &cygheap->installation_key);
+  size_t len;
+  if (appcontainer_sid ())
+    {
+      /* AppContainer named pipes must be scoped to the LOCAL namespace. */
+      len = __small_sprintf (pipename, "\\\\.\\pipe\\LOCAL\\cygwin-%S-",
+			     &cygheap->installation_key);
+    }
+  else
+    len = __small_sprintf (pipename, PIPE_INTRO "%S-",
+			   &cygheap->installation_key);
   DWORD pipe_mode = PIPE_READMODE_BYTE | PIPE_REJECT_REMOTE_CLIENTS;
   if (!name)
     pipe_mode |= pipe_byte ? PIPE_TYPE_BYTE : PIPE_TYPE_MESSAGE;
@@ -1054,9 +1062,18 @@ nt_create (LPSECURITY_ATTRIBUTES sa_ptr, HANDLE &r, HANDLE &w, DWORD psize,
 
   UNICODE_STRING pipename;
   WCHAR pipename_buf[MAX_PATH];
-  size_t len = __small_swprintf (pipename_buf, L"%S-%u-",
-				 &cygheap->installation_key,
-				 GetCurrentProcessId ());
+  size_t len;
+  if (appcontainer_sid ())
+    {
+      /* Match the Win32 CreateNamedPipe path above. */
+      len = __small_swprintf (pipename_buf, L"LOCAL\\%S-%u-",
+			      &cygheap->installation_key,
+			      GetCurrentProcessId ());
+    }
+  else
+    len = __small_swprintf (pipename_buf, L"%S-%u-",
+			    &cygheap->installation_key,
+			    GetCurrentProcessId ());
 
   access = GENERIC_READ | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE;
 
